@@ -2,34 +2,33 @@
 #![no_std]
 #![no_main]
 
+pub mod led;
+pub mod printer;
+pub mod sk6812;
+pub mod state;
+
 use assign_resources::assign_resources;
-use cortex_m::asm::wfi;
-use defmt::*;
+use embassy_time::Timer;
+use defmt::info;
+use embassy_executor::task;
+use embassy_time::Duration;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
+use embassy_rp::gpio::Input;
 use embassy_rp::peripherals;
-use embassy_rp::peripherals::UART1;
+use embassy_rp::peripherals::PIO1;
 use embassy_rp::uart::Blocking;
-use embassy_rp::uart::BufferedInterruptHandler;
 use embassy_rp::uart::Parity;
 use embassy_rp::uart::Uart;
-use embassy_rp::uart::{BufferedUart, Config, DataBits, StopBits};
+use embassy_rp::uart::{Config, DataBits, StopBits};
 use embassy_rp::Peri;
-use embassy_time::Duration;
-use embassy_time::Timer;
-use embedded_io::Read;
 use embedded_io::Write;
-use escpos_embed_image::{embed_image, embed_images};
-use escpos_embedded::Delay;
-use escpos_embedded::FromEmbeddedIo;
-use escpos_embedded::Image;
-use escpos_embedded::PrintSpeed;
+use embassy_rp::pio::{InterruptHandler};
+use crate::printer::Images;
+use crate::state::InputEvent;
+use crate::state::INPUT_EVENTS;
 
-use escpos_embedded::TimingModel;
-// Ensure Image uses a mutable reference for data
-use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
-
 
 assign_resources! {
     uart: UartResources {
@@ -40,95 +39,32 @@ assign_resources! {
         cts_pin: PIN_6,
     },
 
-}
+    keys: KeyResources {
+        key_1: PIN_20,
+        key_2: PIN_19,
+        key_3: PIN_18,
+        key_4: PIN_17,
+        key_5: PIN_11,
+        key_6: PIN_12,
+        key_7: PIN_13,
+        key_8: PIN_14,
+        total: PIN_15,
+        void: PIN_16
+    },
 
-embed_images!(
-    enum Images {
-        #[pattern("gfx/*.png")]
-    }
-);
-
-const fn image_from_char(c: char) -> &'static Image<&'static [u8]> {
-    match c {
-        ' ' => &Images::Space.get_image(),
-        'x' => &Images::X.get_image(),
-        '£' => &Images::Pound.get_image(),
-        '1' => &Images::One.get_image(),
-        '2' => &Images::Two.get_image(),
-        '3' => &Images::Three.get_image(),
-        '4' => &Images::Four.get_image(),
-        '5' => &Images::Five.get_image(),
-        '6' => &Images::Six.get_image(),
-        '7' => &Images::Seven.get_image(),
-        '8' => &Images::Eight.get_image(),
-        '9' => &Images::Nine.get_image(),
-        '0' => &Images::Zero.get_image(),
-        _ => core::panic!("Unsupported character"), // Default to logo for unsupported characters
-    }
-}
-
-
-const FRAMEBUFFER_SIZE: usize = (384 / 8) * 80; // 384 pixels wide, 80 pixels tall, 1 bit per pixel
-
-trait Framebuffer {
-    fn clear(&mut self);
-    fn blit_image<U: AsRef<[u8]>>(&mut self, src: &Image<U>, x_offset: u16, y_offset: u16);
-}
-
-impl<const N: usize> Framebuffer for Image<[u8; N]> {
-    fn clear(&mut self) {
-        self.data.fill(0);
-    }
-
-    fn blit_image<U: AsRef<[u8]>>(&mut self, src: &Image<U>, x_offset: u16, y_offset: u16) {
-        let dest_stride = (self.width + 7) / 8;
-        let src_stride = (src.width + 7) / 8;
-        let src_data = src.data.as_ref();
-
-        for y in 0..src.height {
-            let dy = y + y_offset;
-            if dy >= self.height {
-                continue;
-            }
-
-            for x in 0..src.width {
-                let dx = x + x_offset;
-                if dx >= self.width {
-                    continue;
-                }
-
-                let src_byte = src_data[(y as usize) * (src_stride as usize) + (x / 8) as usize];
-                let src_bit = 7 - (x % 8);
-                let dest_idx = (dy as usize) * (dest_stride as usize) + (dx / 8) as usize;
-                let dest_bit = 7 - (dx % 8);
-                if ((src_byte >> src_bit) & 1) != 0 {
-                    self.data[dest_idx] |= 1 << dest_bit;
-                } else {
-                    self.data[dest_idx] &= !(1 << dest_bit);
-                }
-            }
-        }
+    led: LedResources {
+        pio: PIO1,
+        dma: DMA_CH4,
+        data_pin: PIN_28,
     }
 
 }
 
-// fn print_line_item(printer: &mut escpos_embedded::Printer, item: Images, quantity: u8, price: u8) {
-//     let mut line = [' '; 128];
-//     core::write!(line, "x{quantity}  £{price}").unwrap();
-//     let chars = line.chars().rev();
-//     let mut cur_pos: i16 = 384 - 10;
-//     for c in chars.iter().rev() {
-//         let img = image_from_char(*c);
-//         cur_pos -= img.width as i16;
-//         if cur_pos < 0 {
-//             break;
-//         }
-//         fb_image.blit_image(img, cur_pos as u16, 0);
-//     }
-    
-// }
+bind_interrupts!(struct Irqs {
+    PIO1_IRQ_0 => InterruptHandler<PIO1>;
+});
 
-struct UartWrap<'a>(Uart<'a, Blocking>);
+pub struct UartWrap<'a>(Uart<'a, Blocking>);
 
 impl<'a> escpos_embedded::Write for UartWrap<'a> {
     type Error = embassy_rp::uart::Error;
@@ -137,39 +73,90 @@ impl<'a> escpos_embedded::Write for UartWrap<'a> {
         self.0.blocking_write(buf)?;
         self.0.flush()
     }
-
 }
 impl<'a> escpos_embedded::Read for UartWrap<'a> {
     type Error = embassy_rp::uart::Error;
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-            self.0.blocking_read(buf)?;
-            Ok(buf.len())
-        }
-}
-
-struct PrinterDelay{}
-impl Delay for PrinterDelay {
-    fn delay_ms(&mut self, ms: u32) {
-        embassy_time::block_for(Duration::from_millis(ms as u64));
+        self.0.blocking_read(buf)?;
+        Ok(buf.len())
     }
 }
- 
+
+#[task]
+async fn led_task(led: LedResources) {
+    let runner = led::Led::new(led.pio, led.dma, led.data_pin);
+    runner.run(Irqs).await;
+}
+
+#[task]
+async fn printer_driver(printer: escpos_embedded::Printer<UartWrap<'static>>) {
+    printer::driver(printer).await;
+}
+
+#[task(pool_size=8)]
+async fn produce_button_task(mut btn: Input<'static>, image: Images, price: u16) {
+    loop {
+         btn.wait_for_any_edge().await;
+        if btn.is_low() {
+            info!("Button pressed: {:?}", image);
+            INPUT_EVENTS.send(InputEvent::ProduceButtonPressed {
+                image: image,
+                price,
+            }).await;
+            Timer::after(Duration::from_millis(200)).await;
+        }
+        while btn.is_low() {
+            Timer::after(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+#[task]
+async fn void_button_task(mut btn: Input<'static>) {
+    loop {
+        btn.wait_for_any_edge().await;
+        if btn.is_low() {
+            info!("Void button pressed");
+            INPUT_EVENTS.send(InputEvent::VoidButtonPressed).await;
+            Timer::after(Duration::from_millis(200)).await;
+        }
+        while btn.is_low() {
+            Timer::after(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+#[task]
+async fn total_button_task(mut btn: Input<'static>) {
+    loop {
+        btn.wait_for_any_edge().await;
+        if btn.is_low() {
+            info!("Total button pressed");
+            INPUT_EVENTS.send(InputEvent::TotalButtonPressed).await;
+            Timer::after(Duration::from_millis(200)).await;
+        }
+        while btn.is_low() {
+            Timer::after(Duration::from_millis(100)).await;
+        }
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let r = split_resources!(p);
     let uart_pins = r.uart;
 
+    info!("Starting up...");
+
     let mut config = Config::default();
     config.baudrate = 115200;
     config.data_bits = DataBits::DataBits8;
-    config.stop_bits = StopBits::STOP1; 
+    config.stop_bits = StopBits::STOP1;
     config.parity = Parity::ParityNone;
-    // config.invert_cts = true;
-    // config.invert_rts = true;
 
-    let mut uart = Uart::new_with_rtscts_blocking(
+    let uart = Uart::new_with_rtscts_blocking(
         uart_pins.uart,
         uart_pins.tx_pin,
         uart_pins.rx_pin,
@@ -177,94 +164,57 @@ async fn main(spawner: Spawner) {
         uart_pins.cts_pin,
         config,
     );
-    let mut printer = escpos_embedded::Printer::new(UartWrap(uart));
+    let printer = escpos_embedded::Printer::new(UartWrap(uart));
+    spawner.spawn(printer_driver(printer)).unwrap();
+    spawner.spawn(led_task(r.led)).unwrap();
 
-    let timing_model = TimingModel::new(0, 0);
-    let mut delay = PrinterDelay {};
+    spawner.spawn(state::main_state()).unwrap();
 
-    // printer.set_baud_rate(115200).unwrap();
-    
-    printer.set_software_flow_control(false).unwrap();
-    printer.set_max_speed(200).unwrap();
-    printer.set_print_speed(PrintSpeed::Speed3).unwrap();
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_1, embassy_rp::gpio::Pull::Up),
+        Images::Banana,
+        2
+    )).unwrap();
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_2, embassy_rp::gpio::Pull::Up),
+        Images::Juice,
+        1
+    )).unwrap();
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_3, embassy_rp::gpio::Pull::Up),
+        Images::Eggs,
+        3
+    )).unwrap() ;
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_4, embassy_rp::gpio::Pull::Up),
+        Images::Cheese,
+        4
+    )).unwrap() ;
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_5, embassy_rp::gpio::Pull::Up),
+        Images::Bread,
+        5
+    )).unwrap() ;
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_6, embassy_rp::gpio::Pull::Up),
+        Images::Sberry,
+        6
+    )).unwrap() ;
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_7, embassy_rp::gpio::Pull::Up),
+        Images::Chicken,
+        7
+    )).unwrap() ;
+    spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_8, embassy_rp::gpio::Pull::Up),
+        Images::Pie,
+        8
+    )).unwrap() ;
+    spawner.spawn(void_button_task(
+        Input::new(r.keys.void, embassy_rp::gpio::Pull::Up)
+    )).unwrap();
+    spawner.spawn(total_button_task(
+        Input::new(r.keys.total, embassy_rp::gpio::Pull::Up)
+    )).unwrap();
 
-    // sleep for a bit to allow the printer to initialize
-    Timer::after(Duration::from_millis(2000)).await;
-
-    printer.print_image_with_delay(
-        &Images::Header.get_image(),
-        &timing_model,
-        &mut delay,
-    ).unwrap();
-    
-    let _ = printer.paper_status().unwrap();
-    // Timer::after(Duration::from_millis(5000)).await;
-
-    printer.feed(2).unwrap();
-    printer.raw(&[0x1B, 0x40]).unwrap();
-
-    let mut fb_image: Image<[u8; FRAMEBUFFER_SIZE]> = Image {
-        width: 384,
-        height: 80,
-        data: [0u8; FRAMEBUFFER_SIZE], // Ensure this is a mutable reference
-    };
-    printer.feed(2).unwrap();
-
-    fb_image.clear();
-    fb_image.blit_image(&Images::Banana.get_image(), 0, 0);
-    let chars = ['x', '1', '0', ' ', ' ', '£', '1', '0'];
-    let mut cur_pos: i16 = fb_image.width as i16 - 10;
-
-    for c in chars.iter().rev() {
-        let img = image_from_char(*c);
-        cur_pos -= img.width as i16;
-        if cur_pos < 0 {
-            break;
-        }
-        fb_image.blit_image(img, cur_pos as u16, 0);
-    }
-    
-
-    printer.print_image_with_delay(
-        &fb_image,
-        &timing_model,
-        &mut delay,
-    ).unwrap();
-    printer.feed(2).unwrap();
-
-    fb_image.clear();
-
-    fb_image.blit_image(&Images::Juice.get_image(), 0, 0);
-    let chars = ['x', '9', ' ', ' ', '£', '6'];
-    let mut cur_pos: i16 = fb_image.width as i16 - 10;
-
-    for c in chars.iter().rev() {
-        let img = image_from_char(*c);
-        cur_pos -= img.width as i16;
-        if cur_pos < 0 {
-            break;
-        }
-        fb_image.blit_image(img, cur_pos as u16, 0);
-    }
-
-    printer.print_image_with_delay(
-        &fb_image,
-        &timing_model,
-        &mut delay,
-    ).unwrap();
-
-    printer.feed(2).unwrap();
-    
-    printer.print_image_with_delay(
-        &Images::Footer.get_image(),
-        &timing_model,
-        &mut delay,
-    ).unwrap();
-    let _ = printer.paper_status().unwrap();
-    // Timer::after(Duration::from_millis(5000)).await;
-    printer.feed(2).unwrap();
-
-    loop {
-        wfi();
-    }
 }
