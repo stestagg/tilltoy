@@ -172,42 +172,42 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(produce_button_task(
         Input::new(r.keys.key_1, embassy_rp::gpio::Pull::Up),
-        Images::Banana,
-        2
-    )).unwrap();
-    spawner.spawn(produce_button_task(
-        Input::new(r.keys.key_2, embassy_rp::gpio::Pull::Up),
-        Images::Juice,
+        Images::Garlic,
         1
     )).unwrap();
     spawner.spawn(produce_button_task(
+        Input::new(r.keys.key_2, embassy_rp::gpio::Pull::Up),
+        Images::Carrot,
+        2
+    )).unwrap();
+    spawner.spawn(produce_button_task(
         Input::new(r.keys.key_3, embassy_rp::gpio::Pull::Up),
-        Images::Eggs,
+        Images::Corn,
         3
     )).unwrap() ;
     spawner.spawn(produce_button_task(
         Input::new(r.keys.key_4, embassy_rp::gpio::Pull::Up),
-        Images::Cheese,
+        Images::Tomato,
         4
     )).unwrap() ;
     spawner.spawn(produce_button_task(
         Input::new(r.keys.key_5, embassy_rp::gpio::Pull::Up),
-        Images::Bread,
+        Images::Mushroom,
         5
     )).unwrap() ;
     spawner.spawn(produce_button_task(
         Input::new(r.keys.key_6, embassy_rp::gpio::Pull::Up),
-        Images::Sberry,
+        Images::Aubergine,
         6
     )).unwrap() ;
     spawner.spawn(produce_button_task(
         Input::new(r.keys.key_7, embassy_rp::gpio::Pull::Up),
-        Images::Chicken,
+        Images::Pumpkin,
         7
     )).unwrap() ;
     spawner.spawn(produce_button_task(
         Input::new(r.keys.key_8, embassy_rp::gpio::Pull::Up),
-        Images::Pie,
+        Images::Croissant,
         8
     )).unwrap() ;
     spawner.spawn(void_button_task(

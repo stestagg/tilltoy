@@ -172,7 +172,7 @@ pub async fn driver(mut printer: Printer<UartWrap<'static>>) {
                 }
 
                 printer.print_image(&fb_image).unwrap();
-                printer.raw(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A]).unwrap();
+                printer.raw(&[0x0A, 0x0A, 0x0A]).unwrap();
             }
             DriverEvent::PrintVoid => {
                 printer.raw(&[0x0A]).unwrap();

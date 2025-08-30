@@ -13,7 +13,7 @@ embassy-embedded-hal = { version = "*", path = "../embassy/embassy-embedded-hal"
 embassy-sync = { version = "*", path = "../embassy/embassy-sync", features = ["defmt"] }
 embassy-executor = { version = "*", path = "../embassy/embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt", "nightly"] }
 embassy-time = { version = "*", path = "../embassy/embassy-time", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-rp = { version = "*", path = "../embassy/embassy-rp", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-rp = { version = "*", path = "../embassy/embassy-rp", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa"] }
 embassy-futures = { version = "*", path = "../embassy/embassy-futures" }
 
 static_cell = "*"
@@ -51,7 +51,7 @@ pio-proc = { git = "https://github.com/rp-rs/pio-rs", rev = "adf5ea9095baddbbe11
 pio = { git = "https://github.com/rp-rs/pio-rs", rev = "adf5ea9095baddbbe1129b368616bc81e3d4a425" }
 rand = { version = "0.8.5", default-features = false }
 embedded-sdmmc = { version = "*" }
-rp-pac = { version = "*", features = ["rp2040"] }
+rp-pac = { version = "*", features = ["rp235x"] }
 
 [profile.release]
 lto = true
